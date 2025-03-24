@@ -1,6 +1,9 @@
 import { Hono, type Context } from "hono";
 import { env } from "../utils/env";
 import { generateJwt } from "../utils/generateJwt";
+import { setCookie } from "hono/cookie";
+import { Prisma } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 
 export const auth = new Hono();
 
@@ -51,7 +54,7 @@ auth.get("/callback", async (c: Context) => {
         body: tokenEndpoint.searchParams.toString(),
       }
     );
-    const tokenData = await tokenResponse.json();
+    const tokenData = await tokenResponse.json() as { access_token: string };
     const accessToken = tokenData.access_token;
     const userInfoResponse = await fetch(
       "https://www.googleapis.com/oauth2/v2/userinfo",
@@ -61,14 +64,38 @@ auth.get("/callback", async (c: Context) => {
         },
       }
     );
-    const userInfo = await userInfoResponse.json();
+    const userInfo: any = await userInfoResponse.json();
     const tokenPayload = JSON.stringify(userInfo);
-    c.text(userInfo);
-    const jwt = await generateJwt(tokenPayload);
+    const prisma = new PrismaClient()
+
+    let user = await prisma.user.findFirst({
+      where: {
+        email: userInfo.email || ""
+      }
+    })
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          id: userInfo.id,
+          email: userInfo.email,
+          name: userInfo.name,
+          picture: userInfo.picture
+        }
+      })
+    }
+    const jwt = await generateJwt(user);
+    setCookie(c, "jwt", jwt, {
+        httpOnly: true,
+        secure: env.NODE_ENV !== 'development',
+        sameSite: env.NODE_ENV === 'development' ? 'lax' : 'none',
+        maxAge: 60*60*24*30,
+        path: '/',
+    });
+    
     return new Response(tokenPayload, {
       status: 200,
       headers: {
-        "Set-Cookie": `jwt=${jwt}; HttpOnly; Secure; SameSite=None; Path=/;`,
+        "Set-Cookie": `jwt=${jwt}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=3600`,
         "Content-Type": "application/json",
       },
     });
